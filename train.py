@@ -1,24 +1,22 @@
-"""
-Author: Davy Neven
-Licensed under the CC BY-NC 4.0 license (https://creativecommons.org/licenses/by-nc/4.0/)
-"""
 import os
 import shutil
-import time
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 from matplotlib import pyplot as plt
 from tqdm import tqdm
 
-import torch
 import train_config
 from datasets import get_dataset
 from models import get_model
-import torch.nn as nn
+
 torch.backends.cudnn.benchmark = True
 from utils import AverageMeter, Logger, Visualizer
 from scipy import ndimage
-import numpy as np
 from utils2 import matching_dataset
+
+torch.backends.cudnn.benchmark = True
 
 args = train_config.get_args()
 
@@ -39,18 +37,17 @@ device = torch.device("cuda:0" if args['cuda'] else "cpu")
 train_dataset = get_dataset(
     args['train_dataset']['name'], args['train_dataset']['kwargs'])
 
-
 train_dataset_it = torch.utils.data.DataLoader(
-    train_dataset, batch_size=args['train_dataset']['batch_size'], shuffle=True, drop_last=True, num_workers=args['train_dataset']['workers'], pin_memory=True if args['cuda'] else False)
-
+    train_dataset, batch_size=args['train_dataset']['batch_size'], shuffle=True, drop_last=True,
+    num_workers=args['train_dataset']['workers'], pin_memory=True if args['cuda'] else False)
 
 # val dataloader
 val_dataset = get_dataset(
     args['val_dataset']['name'], args['val_dataset']['kwargs'])
 
 val_dataset_it = torch.utils.data.DataLoader(
-    val_dataset, batch_size=args['val_dataset']['batch_size'], shuffle=True, drop_last=True, num_workers=args['train_dataset']['workers'], pin_memory=True if args['cuda'] else False)
-
+    val_dataset, batch_size=args['val_dataset']['batch_size'], shuffle=True, drop_last=True,
+    num_workers=args['train_dataset']['workers'], pin_memory=True if args['cuda'] else False)
 
 # set model
 model = get_model(args['model']['name'], args['model']['kwargs'])
@@ -60,18 +57,18 @@ model = torch.nn.DataParallel(model).to(device)
 optimizer = torch.optim.Adam(
     model.parameters(), lr=args['lr'], weight_decay=1e-4)
 
+
 def lambda_(epoch):
-    return pow((1-((epoch)/args['n_epochs'])), 0.9)
+    return pow((1 - ((epoch) / args['n_epochs'])), 0.9)
+
 
 scheduler = torch.optim.lr_scheduler.LambdaLR(
-    optimizer, lr_lambda=lambda_,)
-
+    optimizer, lr_lambda=lambda_, )
 
 visualizer = Visualizer(('image', 'pred'))
 
 # Logger
 logger = Logger(('train', 'val', 'val ap'), 'loss')
-
 
 # resume
 start_epoch = 0
@@ -94,93 +91,74 @@ def save_checkpoint(state, is_best, name='checkpoint.pth'):
         shutil.copyfile(file_name, os.path.join(
             args['save_dir'], 'best_iou_model.pth'))
 
-def lossFunctionSegmentation(prediction, labels_BG, labels_FG, labels_M):
 
-    onehot_targets = torch.cat((labels_BG, labels_FG, labels_M), 1).cuda()
-    class_weights = torch.tensor([1.0, 1.0, 5.0]).cuda()
-    criterion1 = nn.CrossEntropyLoss(weight=class_weights)
-    multiclass_targets = torch.argmax(onehot_targets, dim=1)
-    loss = criterion1(prediction, multiclass_targets.long())
-    return loss
-
+# create criterion
+criterion = nn.CrossEntropyLoss(weight=torch.tensor([1.0, 1.0, 5.0]).cuda())  # apply sigmoid, then softmax
+criterion = torch.nn.DataParallel(criterion).to(device)
 
 
 def train(epoch):
     loss_meter = AverageMeter()
     model.train()
     for i, sample in enumerate(tqdm(train_dataset_it)):
-        im = sample['image'] # B 1 Y X
-        label_bg = sample['label_bg']# B 1 Y X
-        label_fg = sample['label_fg'] # B 1 Y X
-        label_membrane = sample['label_membrane'] # B 1 Y X
-        instance = sample['instance'] # B 1 Y X
-        output = model(im) # B3YX
-        loss= lossFunctionSegmentation(output, label_bg, label_fg, label_membrane)
+        images = sample['image']  # B 1 Y X
+        semantic_masks = sample['semantic_mask']  # B 1 Y X
+        semantic_masks.squeeze_(1)  # B Y X (loss expects this format)
+        instance = sample['instance_mask']
+        output = model(images)
+        loss = criterion(output, semantic_masks.long())  # B 1 Y X
         loss = loss.mean()
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
+
         if args['display'] and i % args['display_it'] == 0:
             with torch.no_grad():
-                visualizer.display(im[0], 'image', 'image')  # TODO
-
-                pred_numpy = output[0].cpu().detach().numpy()  # 3YX
-                pred_numpy = np.moveaxis(pred_numpy, 0, -1)  # YX3
-                prediction_exp = np.exp(pred_numpy[..., :])
-                prediction_seg = prediction_exp / np.sum(prediction_exp, axis=2)[..., np.newaxis]
-                prediction_fg = prediction_seg[..., 1]
-                pred_thresholded = prediction_fg > 0.5  # TODO optimize over val
-                instance_map, _ = ndimage.label(pred_thresholded)
-                visualizer.display([instance_map, instance[0, 0, ...].cpu()], 'pred', 'predictions', 'groundtruth')  # TODO
+                visualizer.display(images[0], 'image', 'image')  # 1YX
+                output_softmax = F.softmax(output[0], dim=0)
+                prediction_fg = output_softmax[1, ...].cpu().detach().numpy()
+                pred_fg_thresholded = prediction_fg > 0.5
+                instance_map, _ = ndimage.label(pred_fg_thresholded)
+                visualizer.display([instance_map, instance[0, 0, ...].cpu()], 'pred', 'predictions', 'groundtruth')
         loss_meter.update(loss.item())
-
-
-
 
     return loss_meter.avg
 
+
 def val(epoch):
-    loss_meter, ap_meter = AverageMeter(), AverageMeter()
+    loss_meter = AverageMeter()
+    average_precision_meter = AverageMeter()
     model.eval()
     with torch.no_grad():
         for i, sample in enumerate(tqdm(val_dataset_it)):
-            im = sample['image']
-            label_bg = sample['label_bg']  # BYX
-            label_fg = sample['label_fg']  # BYX
-            label_membrane = sample['label_membrane']  # BYX
-            instance = sample['instance']
-            output = model(im)  # B3YX
-            loss = lossFunctionSegmentation(output, label_bg, label_fg, label_membrane)
+
+            images = sample['image']  # B 1 Y X
+            semantic_masks = sample['semantic_mask']  # B 1 Y X ==> channel can be 0, 1, 2
+            semantic_masks.squeeze_(1)  # B Y X (loss expects this format)
+            instance = sample['instance_mask']
+            output = model(images)  # B 3 Y X
+            loss = criterion(output, semantic_masks.long())  # B 1 Y X
             loss = loss.mean()
+            loss_meter.update(loss.item())
             if args['display'] and i % args['display_it'] == 0:
                 with torch.no_grad():
-                    visualizer.display(im[0], 'image', 'image')  # TODO
-
-                    pred_numpy = output[0].cpu().detach().numpy()  # 3YX
-                    pred_numpy = np.moveaxis(pred_numpy, 0, -1)  # YX3
-                    prediction_exp = np.exp(pred_numpy[..., :])
-                    prediction_seg = prediction_exp / np.sum(prediction_exp, axis=2)[..., np.newaxis]
-                    prediction_fg = prediction_seg[..., 1]
-                    pred_thresholded = prediction_fg > 0.5  # TODO optimize over val
-                    instance_map, _ = ndimage.label(pred_thresholded)
-                    visualizer.display([instance_map, instance[0, 0, ...].cpu()], 'pred', 'predictions',  'groundtruth')  # TODO
-
+                    visualizer.display(images[0], 'image', 'image')  # TODO
+                    output_softmax = F.softmax(output[0], dim=0)
+                    prediction_fg = output_softmax[1, ...].cpu().detach().numpy()
+                    pred_fg_thresholded = prediction_fg > 0.5
+                    instance_map, _ = ndimage.label(pred_fg_thresholded)
+                    visualizer.display([instance_map, instance[0, 0, ...].cpu()], 'pred', 'predictions', 'groundtruth')
             # compute best iou
             for b in range(output.shape[0]):
-                pred_numpy = output[b].cpu().detach().numpy()  # 3YX not entirely accurate -  we are ignoring all elements of the batch!
-                pred_numpy = np.moveaxis(pred_numpy, 0, -1)  # YX3
-                prediction_exp = np.exp(pred_numpy[..., :])
-                prediction_seg = prediction_exp / np.sum(prediction_exp, axis=2)[..., np.newaxis]
-                prediction_fg = prediction_seg[..., 1]
-                pred_thresholded = prediction_fg > 0.5  # TODO optimize over val
-                instance_map, _ = ndimage.label(pred_thresholded)
-                sc = matching_dataset([instance_map], [instance[b, 0, ...].cpu().detach().numpy()], thresh=0.5, show_progress=False)  # TODO
-                loss_meter.update(loss.item())
-                ap_meter.update(sc.accuracy)
+                output_softmax = F.softmax(output[0], dim=0)
+                prediction_fg = output_softmax[1, ...].cpu().detach().numpy()
+                pred_fg_thresholded = prediction_fg > 0.5
+                instance_map, _ = ndimage.label(pred_fg_thresholded)
+                sc = matching_dataset([instance_map], [instance[b, 0, ...].cpu().detach().numpy()], thresh=0.5,
+                                      show_progress=False)
+                average_precision_meter.update(sc.accuracy)
 
-    return loss_meter.avg,  ap_meter.avg
-
-
+    return loss_meter.avg, average_precision_meter.avg
 
 
 for epoch in range(start_epoch, args['n_epochs']):
@@ -197,7 +175,6 @@ for epoch in range(start_epoch, args['n_epochs']):
     logger.add('val', val_loss)
     logger.add('val ap', val_ap)
     logger.plot(save=args['save'], save_dir=args['save_dir'])
-
 
     is_best = val_ap > best_ap
     best_ap = max(val_ap, best_ap)

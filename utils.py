@@ -94,13 +94,13 @@ class Visualizer:
         if n_images == 1:
             ax.cla()
             ax.set_axis_off()
-            ax.imshow(self.prepare_img(image))
+            ax.imshow(self.prepare_img(image), cmap='magma')
             ax.set_title(title)
         else:
             for i in range(n_images):
                 ax[i].cla()
                 ax[i].set_axis_off()
-                ax[i].imshow(self.prepare_img(image[i]))
+                ax[i].imshow(self.prepare_img(image[i]), cmap='magma')
                 if i == 0:
                     ax[i].set_title(title)
                 elif i == 1:
