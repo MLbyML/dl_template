@@ -9,5 +9,4 @@ A template for my deep learning projects
 4,0.24766849905730567,0.18194584861315416,0.7469454398505755
 5,0.24423155021221243,0.17485754850490318,0.778173771514558
 
-# Scores 81.3157 on test data
-# possibly will go up with test time augmentation!!
+Scores 81.3157 on test data, without test time augmentation. Possibly will go up with test time augmentation!!
