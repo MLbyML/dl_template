@@ -10,3 +10,6 @@ A template for my deep learning projects
 |5|0.24423155021221243|0.17485754850490318|0.778173771514558|
 
 Scores **81.3157** on DSB-2018 normalized test images, without test time augmentation. Possibly will go up with test time augmentation!!
+
+Run after saving normalized crops:
+`DATA_DIR='/home/manan/Desktop/EmbedSeg_MIDL/EmbedSeg/examples/2d/dsb-2018/crops' python3 train.py`
