@@ -9,7 +9,7 @@ args = dict(
     display=False,  # TODO
     display_it=5,
     save=True,
-    save_dir='./exp/dsb2018_april8_v0.1.1', #TODO : specify
+    save_dir='./exp/dsb2018_april26', #TODO : specify
     resume_path=None,  # TODO
 
     train_dataset={

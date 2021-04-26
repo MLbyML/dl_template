@@ -150,12 +150,11 @@ def val(epoch):
                     visualizer.display([instance_map, instance[0, 0, ...].cpu()], 'pred', 'predictions', 'groundtruth')
             # compute best iou
             for b in range(output.shape[0]):
-                output_softmax = F.softmax(output[0], dim=0)
+                output_softmax = F.softmax(output[b], dim=0)
                 prediction_fg = output_softmax[1, ...].cpu().detach().numpy()
                 pred_fg_thresholded = prediction_fg > 0.5
                 instance_map, _ = ndimage.label(pred_fg_thresholded)
-                sc = matching_dataset([instance_map], [instance[b, 0, ...].cpu().detach().numpy()], thresh=0.5,
-                                      show_progress=False)
+                sc = matching_dataset(y_pred = [instance_map], y_true= [instance[b, 0, ...].cpu().detach().numpy()], thresh=0.5, show_progress=False)
                 average_precision_meter.update(sc.accuracy)
 
     return loss_meter.avg, average_precision_meter.avg
